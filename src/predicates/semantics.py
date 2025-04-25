@@ -12,6 +12,8 @@ from src.logic_utils import frozendict
 
 from src.predicates.syntax import *
 
+from itertools import product
+
 #: A generic type for a universe element in a model.
 T = TypeVar("T")
 
@@ -133,69 +135,95 @@ class Model(Generic[T]):
             )
         )
 
-    def evaluate_term(self, term: Term, assignment: Mapping[str, T] = frozendict()) -> T:
-        """Calculates the value of the given term in the current model under the
-        given assignment of values to variable names.
+    def evaluate_term(self, term: Term,
+                  assignment: Mapping[str, T] = frozendict()) -> T:
 
-        Parameters:
-            term: term to calculate the value of, for the constant and function
-                names of which the current model has interpretations.
-            assignment: mapping from each variable name in the given term to a
-                universe element to which it is to be evaluated.
-
-        Returns:
-            The value (in the universe of the current model) of the given
-            term in the current model under the given assignment of values to
-            variable names.
-        """
         assert term.constants().issubset(self.constant_interpretations.keys())
         assert term.variables().issubset(assignment.keys())
         for function, arity in term.functions():
             assert function in self.function_interpretations and self.function_arities[function] == arity
+
+        if not getattr(term, "arguments", None):
+            if term.root in assignment:                  
+                return assignment[term.root]
+            else:                                        
+                return self.constant_interpretations[term.root]
+        args_values = []
+        for a in term.arguments:
+            args_values.append(self.evaluate_term(a, assignment))
+        ri = self.function_interpretations[term.root]
+        return ri[tuple(args_values)]
+
         # Task 7.7
 
     def evaluate_formula(self, formula: Formula, assignment: Mapping[str, T] = frozendict()) -> bool:
-        """Calculates the truth value of the given formula in the current model
-        under the given assignment of values to free occurrences of variable
-        names.
 
-        Parameters:
-            formula: formula to calculate the truth value of, for the constant,
-                function, and relation names of which the current model has
-                interpretations.
-            assignment: mapping from each variable name that has a free
-                occurrence in the given formula to a universe element to which
-                it is to be evaluated.
-
-        Returns:
-            The truth value of the given formula in the current model under the
-            given assignment of values to free occurrences of variable names.
-        """
         assert formula.constants().issubset(self.constant_interpretations.keys())
         assert formula.free_variables().issubset(assignment.keys())
         for function, arity in formula.functions():
             assert function in self.function_interpretations and self.function_arities[function] == arity
         for relation, arity in formula.relations():
             assert relation in self.relation_interpretations and self.relation_arities[relation] in {-1, arity}
-        # Task 7.8
+        
+
+
+        if is_equality(formula.root):
+            x, y = formula.arguments
+            x = self.evaluate_term(x, assignment)
+            y = self.evaluate_term(y, assignment)
+            return (x == y)
+
+        if is_unary(formula.root):
+            first_val = self.evaluate_formula(formula.first, assignment)
+            return not first_val
+
+        if is_binary(formula.root):
+            first_val = self.evaluate_formula(formula.first, assignment)
+            second_val = self.evaluate_formula(formula.second, assignment)
+            if formula.root == '&':
+                return first_val and second_val
+            if formula.root == '|':
+                return first_val or second_val
+        
+            return not first_val or second_val
+
+
+        if is_relation(formula.root):
+            rg = []
+            for term in formula.arguments:
+                rg.append(self.evaluate_term(term, assignment))
+            if tuple(rg) in self.relation_interpretations[formula.root]:
+                return True
+            else:
+                return False
+
+        for element in self.universe:
+            na = dict(assignment)
+            na[formula.variable] = element
+            result = self.evaluate_formula(formula.statement, na)
+            if formula.root == 'A':
+                if not result:
+                    return False
+            else:
+                if result:
+                    return True
+        return True if formula.root == 'A' else False
+
 
     def is_model_of(self, formulas: AbstractSet[Formula]) -> bool:
-        """Checks if the current model is a model of the given formulas.
-
-        Parameters:
-            formulas: formulas to check, for the constant, function, and
-                relation names of which the current model has interpretations.
-
-        Returns:
-            ``True`` if each of the given formulas evaluates to true in the
-            current model under any assignment of elements from the universe of
-            the current model to the free occurrences of variable names in that
-            formula, ``False`` otherwise.
-        """
         for formula in formulas:
             assert formula.constants().issubset(self.constant_interpretations.keys())
-            for function, arity in formula.functions():
-                assert function in self.function_interpretations and self.function_arities[function] == arity
-            for relation, arity in formula.relations():
-                assert relation in self.relation_interpretations and self.relation_arities[relation] in {-1, arity}
-        # Task 7.9
+            for function, rt in formula.functions():
+                assert function in self.function_interpretations and self.function_arities[function] == rt
+            for relation, rt in formula.relations():
+                assert relation in self.relation_interpretations and self.relation_arities[relation] in {-1, rt}
+                
+        for formula in formulas:
+            if not list(formula.free_variables()):
+                if not self.evaluate_formula(formula):
+                    return False
+            else:
+                for x in product(self.universe, repeat=len(list(formula.free_variables()))):
+                    if not self.evaluate_formula(formula, dict(zip(list(formula.free_variables()), x))):
+                        return False
+        return True
